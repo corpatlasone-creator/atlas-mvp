@@ -1,124 +1,134 @@
 import streamlit as st
 import pandas as pd
 from playwright.sync_api import sync_playwright
-import os
 import time
+import os
 from io import BytesIO
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Automação de Precatórios SP", layout="wide")
+st.set_page_config(page_title="Robô TJSP - Consulta Rápida", layout="wide")
 
-# --- FUNÇÃO DE AUTOMAÇÃO (ROBÔ) ---
-def consultar_processos_sp(df_entrada):
-    resultados = []
+st.title("🤖 Robô de Consulta - TJSP")
+st.markdown("""
+Cole a lista de processos abaixo (um por linha) e o robô buscará os detalhes automaticamente.
+""")
+
+# --- FUNÇÃO DE CONSULTA (O CÉREBRO DO ROBÔ) ---
+def consultar_processos_sp(lista_numeros):
+    dados_coletados = []
     
-    # Barra de progresso visual
-    progresso_bar = st.progress(0)
-    status_text = st.empty()
-    total = len(df_entrada)
-
     with sync_playwright() as p:
-        # CONFIGURAÇÃO CRÍTICA PARA O RENDER
-        browser = p.chromium.launch(
-            headless=True, 
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
-        )
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-        page = context.new_page()
-
-        for index, row in df_entrada.iterrows():
-            # Tenta pegar a coluna do processo (ajuste o nome se necessário baseando-se no seu PDF)
-            # No seu PDF a coluna chama "N° Processo DEPRE" ou similar
-            numero_processo = str(row.get('N° Processo DEPRE', row.get('Processo', '')))
+        # Tenta lançar o navegador. Se der erro no caminho, usa o padrão.
+        try:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        except:
+            browser = p.chromium.launch(headless=True)
             
-            # Limpa formatação (remove pontos e traços) para a busca
-            processo_limpo = ''.join(filter(str.isdigit, numero_processo))
+        page = browser.new_page()
 
-            dado_coletado = {
-                "Processo Original": numero_processo,
-                "Status": "Não processado",
-                "Última Movimentação": "",
-                "Juiz/Vara": ""
-            }
+        # Barra de progresso visual
+        progresso_texto = st.empty()
+        barra = st.progress(0)
+        total = len(lista_numeros)
 
-            if len(processo_limpo) < 10:
-                dado_coletado["Status"] = "Número inválido"
-                resultados.append(dado_coletado)
-                continue
+        for i, processo in enumerate(lista_numeros):
+            processo = processo.strip() # Remove espaços extras
+            if not processo:
+                continue # Pula linhas vazias
+                
+            progresso_texto.text(f"🔍 Consultando processo {i+1}/{total}: {processo}")
+            barra.progress((i + 1) / total)
 
             try:
-                status_text.text(f"Consultando {index + 1}/{total}: {numero_processo}...")
+                # 1. Tenta acessar direto pelo link do processo unificado
+                url = f"https://esaj.tjsp.jus.br/cpopg/search.do?conversationId=&dadosConsulta.localPesquisa.cdLocal=-1&cbPesquisa=NUMPROC&dadosConsulta.tipoNuProcesso=UNIFICADO&dadosConsulta.valorConsultaNuProcesso={processo}"
+                page.goto(url, timeout=30000)
                 
-                # --- LÓGICA DE NAVEGAÇÃO NO TJSP (ESAJ) ---
-                # URL de consulta de 1º grau (exemplo)
-                page.goto("https://esaj.tjsp.jus.br/cpopg/open.do", timeout=60000)
-                
-                # Preenche o campo de processo unificado (ajuste o seletor se o site mudar)
-                page.locator("#processoMascaradoClient").fill(numero_processo)
-                page.locator("#button-consultarProcesso").click()
-                
-                # Espera carregar. Se pedir senha ou der erro, vai cair no 'except'
-                try:
-                    # Espera aparecer o título do processo ou aviso de erro
-                    page.wait_for_selector("#tabelaTodasMovimentacoes, #mensagemRetorno", timeout=5000)
-                except:
-                    pass
+                # Espera um pouco para garantir que carregou
+                page.wait_for_timeout(2000)
 
-                # Verifica se achou
-                if page.locator("#tabelaTodasMovimentacoes").count() > 0:
-                    # Pega a última movimentação
-                    ult_mov = page.locator("#tabelaTodasMovimentacoes tr").first.inner_text()
-                    vara = page.locator("#varaProcesso").inner_text() if page.locator("#varaProcesso").count() > 0 else ""
-                    
-                    dado_coletado["Status"] = "Encontrado"
-                    dado_coletado["Última Movimentação"] = ult_mov.strip()
-                    dado_coletado["Juiz/Vara"] = vara.strip()
+                # Verifica se apareceu mensagem de erro (ex: Não encontrado)
+                if page.locator("text=Não foram encontrados dados").count() > 0:
+                    status = "Não encontrado"
+                    valor = ""
+                    partes = ""
                 else:
-                    dado_coletado["Status"] = "Não encontrado / Segredo de Justiça / Captcha"
+                    status = "Encontrado"
+                    
+                    # Tenta pegar o valor da ação (se existir)
+                    try:
+                        valor = page.locator("#valorAcaoProcesso").inner_text()
+                    except:
+                        valor = "Não localizado"
+
+                    # Tenta pegar as partes (Autor/Réu)
+                    try:
+                        partes = page.locator("#tablePartesPrincipais").inner_text()
+                        partes = partes.replace("\n", " | ") # Deixa tudo numa linha só
+                    except:
+                        partes = ""
+
+                # Salva o resultado
+                dados_coletados.append({
+                    "Numero_Processo": processo,
+                    "Status": status,
+                    "Valor_Acao": valor,
+                    "Envolvidos": partes,
+                    "Link": url
+                })
 
             except Exception as e:
-                dado_coletado["Status"] = f"Erro: {str(e)}"
-
-            resultados.append(dado_coletado)
-            
-            # Atualiza barra de progresso
-            progresso_bar.progress((index + 1) / total)
-            time.sleep(1) # Pausa pequena para não bloquear o IP
+                # Se der erro em um, não para tudo. Apenas anota o erro.
+                dados_coletados.append({
+                    "Numero_Processo": processo,
+                    "Status": f"Erro: {str(e)}",
+                    "Valor_Acao": "",
+                    "Envolvidos": "",
+                    "Link": ""
+                })
 
         browser.close()
-    
-    status_text.text("Finalizado!")
-    return pd.DataFrame(resultados)
+        barra.empty()
+        progresso_texto.empty()
 
-# --- INTERFACE DO USUÁRIO ---
+    return pd.DataFrame(dados_coletados)
 
-st.title("🤖 Robô de Consulta - Precatórios SP")
-st.markdown("Faça upload da lista (Excel ou PDF convertido) e o sistema consultará automaticamente no TJSP.")
+# --- INTERFACE DE ENTRADA (MUDAMOS AQUI) ---
+entrada_texto = st.text_area(
+    "Digite ou cole os números dos processos aqui (pressione Enter para pular linha):", 
+    height=200,
+    placeholder="Exemplo:\n1002345-12.2023.8.26.0100\n0004567-89.2022.8.26.0001"
+)
 
-arquivo_upload = st.file_uploader("Solte seu arquivo aqui (.xlsx)", type=["xlsx"])
+col1, col2 = st.columns([1, 4])
 
-if arquivo_upload:
-    df = pd.read_excel(arquivo_upload)
-    st.dataframe(df.head())
-    
-    st.info(f"Arquivo carregado com {len(df)} linhas. Clique abaixo para iniciar a automação.")
+if col1.button("🚀 Iniciar Consulta"):
+    if not entrada_texto.strip():
+        st.warning("⚠️ Por favor, cole pelo menos um número de processo.")
+    else:
+        # Transforma o texto em uma lista, separando por linha
+        lista_processos = entrada_texto.split('\n')
+        # Remove linhas vazias
+        lista_processos = [p for p in lista_processos if p.strip()]
+        
+        st.info(f"Iniciando busca de {len(lista_processos)} processos...")
+        
+        # Chama a função do robô
+        df_resultado = consultar_processos_sp(lista_processos)
+        
+        st.success("✅ Consulta Finalizada!")
+        
+        # Mostra a tabela na tela
+        st.dataframe(df_resultado)
 
-    if st.button("🚀 Iniciar Automação"):
-        with st.spinner("O robô está trabalhando... Isso pode levar alguns minutos."):
-            # Chama a função de automação
-            df_resultado = consultar_processos_sp(df)
+        # Botão para baixar o Excel
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df_resultado.to_excel(writer, index=False, sheet_name='Resultados')
             
-            st.success("Consulta concluída!")
-            st.dataframe(df_resultado)
-            
-            # Botão para baixar o Excel final
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                df_resultado.to_excel(writer, index=False, sheet_name='Resultados')
-            
-            st.download_button(
-                label="📥 Baixar Relatório Completo em Excel",
-                data=buffer.getvalue(),
-                file_name="Relatorio_Precatórios_SP.xlsx",
-                mime="application/vnd.ms-excel"
-            )
+        st.download_button(
+            label="📥 Baixar Planilha Excel",
+            data=buffer.getvalue(),
+            file_name="Resultado_Consulta_TJSP.xlsx",
+            mime="application/vnd.ms-excel"
+        )
