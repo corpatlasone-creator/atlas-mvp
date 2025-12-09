@@ -76,7 +76,10 @@ if arquivos:
             
             with sync_playwright() as p:
                 # HEADLESS=TRUE É OBRIGATÓRIO NA NUVEM
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(
+    headless=True,
+    args=["--no-sandbox", "--disable-setuid-sandbox"]
+)
                 page = browser.new_page()
                 
                 for i, row in df_final.iterrows():
@@ -108,4 +111,5 @@ if arquivos:
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df_res.to_excel(writer, index=False)
                 
+
             st.download_button("📥 BAIXAR RELATÓRIO FINAL", buffer, "Atlas_Brasil.xlsx", "application/vnd.ms-excel")
