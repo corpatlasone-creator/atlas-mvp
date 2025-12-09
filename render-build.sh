@@ -6,7 +6,6 @@ set -o errexit
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 2. Instala o navegador e a PEÇA QUE ESTAVA FALTANDO
-playwright install chromium
-playwright install chromium-headless-shell
-playwright install-deps
+# 2. Instala APENAS os navegadores do Playwright
+# Removemos o "install-deps" porque ele requer sudo e falha no Render
+playwright install chromium chromium-headless-shell
