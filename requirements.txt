@@ -1,0 +1,8 @@
+
+streamlit
+pandas
+playwright
+openpyxl
+xlsxwriter
+pypdf
+requests
